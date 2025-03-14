@@ -66,8 +66,8 @@ mask any \
 profiles replace-all-with { \
  tcp {} \
  http {} \
- forgingca { context clientside } \
- forgingca { context serverside } \
+ proxy-passthrough-decrypt-cssl { context clientside } \
+ proxy-passthrough-decrypt-sssl { context serverside } \
 } \
 source-address-translation { type automap } \
 translate-address disabled \
