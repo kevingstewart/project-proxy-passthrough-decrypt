@@ -19,7 +19,7 @@ echo "..Creating a stub CA key"
 
 ## Create the iRule
 echo "..Creating the iRule"
-rule=$(curl -sk $(${baseurl}/refs/heads/main/proxy-passthrough-rule | awk '{printf "%s\\n", $0}' | sed -e 's/\"/\\"/g;s/\x27/\\'"'"'/g')
+rule=$(curl -sk ${baseurl}/refs/heads/main/proxy-passthrough-rule | awk '{printf "%s\\n", $0}' | sed -e 's/\"/\\"/g;s/\x27/\\'"'"'/g')
 data="{\"name\":\"proxy-passthrough-rule\",\"apiAnonymous\":\"${rule}\"}"
 curl -sk \
 -u ${BIGUSER} \
