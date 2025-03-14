@@ -1,0 +1,102 @@
+#### Setup virtualenv (assuming Python3.12 for below)
+# python3 -m venv ansible_venv
+# source ansible_venv/bin/activate
+# pip3 install --upgrade pip
+# pip3 install ansible-core==2.17.8
+# pip3 install netaddr
+
+#### Setup environment
+# mkdir ansible && cd ansible
+# mkdir playbooks
+# echo -e "[defaults]\ndeprecation_warnings = False\nhost_key_checking = False\nretry_files_enabled = False\nstdout_callback = minimal" >> ansible.cfg
+
+#### Install latest f5networks collection
+# ansible-galaxy collection install git+https://github.com/F5Networks/f5-ansible-bigip.git#ansible_collections/f5networks/f5_bigip -p /home/${USER}/.ansible/collections
+
+#### - or install the latest development collection
+# wget https://f5-ansible.s3.amazonaws.com/collections/f5networks-f5_bigip-devel.tar.gz
+# ansible-galaxy collection install f5networks-f5_bigip-devel.tar.gz -p /home/${USER}/.ansible/collections --force
+
+#### Once in the Python virtual environment, execution of BIG-IP declarative Ansible playbooks look like this:
+# export BIGHOST='10.1.1.6'
+# export BIGPASS='password'
+# ansible-playbook -i notahost, playbooks/test.yaml
+
+---
+- name: Create an SSLO Service Chain
+  hosts: all
+  connection: httpapi
+  gather_facts: false
+
+  collections:
+    - f5networks.f5_bigip
+
+  vars:
+    ansible_host: "{{ lookup('ansible.builtin.env', 'BIGHOST') }}"
+    ansible_httpapi_password: "{{ lookup('ansible.builtin.env', 'BIGPASS') }}"
+    ansible_httpapi_port: 443
+    ansible_user: "admin"
+    ansible_network_os: f5networks.f5_bigip.bigip
+    ansible_httpapi_use_ssl: yes
+    ansible_httpapi_validate_certs: no
+
+  tasks:
+    - fail:
+        msg: "Environment variable 'BIGHOST' is empty. Do `export BIGHOST='host'`"
+      when: lookup('env', 'BIGHOST') | length == 0
+
+    - fail:
+        msg: "Environment variable 'BIGPASS' is empty. Do `export BIGPASS='pass'`"
+      when: lookup('env', 'BIGPASS') | length == 0
+
+    ### Forging CA certificate and key functions
+    - name: Download forging CA key
+      ansible.builtin.get_url: 
+        url: https://raw.githubusercontent.com/kevingstewart/project-proxy-passthrough-decrypt/refs/heads/main/forgingcakey
+        dest: ../forgingcakey
+
+    - name: Base64-decode forging CA key
+      ansible.builtin.shell:
+        cmd: cat ../forgingcakey | base64 -d > forgingca.key
+      
+    - name: Download forging CA cert
+      ansible.builtin.get_url: 
+        url: https://raw.githubusercontent.com/kevingstewart/project-proxy-passthrough-decrypt/refs/heads/main/forgingcacrt
+        dest: ../forgingcacrt
+
+    - name: Base64-decode forging CA cert
+      ansible.builtin.shell:
+        cmd: cat ../forgingcacrt | base64 -d > forgingca.crt
+
+    - name: Import forging CA key
+      bigip_ssl_key_cert:
+        key_content: "{{ lookup('file', '../forgingca.key') }}"
+        key_name: forgingca
+        cert_content: "{{ lookup('file', '../forgingca.crt') }}"
+        cert_name: forgingca
+        true_names: true
+    
+    - name: Remove file (delete file)
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: absent
+      loop:
+        - "./forgingcacrt"
+        - "./forgingcakey"
+        - "./forgingca.crt"
+        - "./forgingca.key"
+
+
+    ## SSL profile functions
+    - name: Create the SSLFWD client and server SSL profiles
+      bigip_command:
+        commands:
+          - tmsh create ltm profile client-ssl proxy-passthrough-decrypt-cssl allow-non-ssl enabled ssl-forward-proxy enabled ssl-forward-proxy-bypass enabled cert-key-chain add { forgingca { cert forgingca key forgingca usage CA }}
+          - tmsh create ltm profile server-ssl proxy-passthrough-decrypt-sssl ssl-forward-proxy enabled ssl-forward-proxy-bypass enabled peer-cert-mode require ca-file ca-bundle.crt expire-cert-response-control ignore revoked-cert-status-response-control ignore unknown-cert-status-response-control ignore untrusted-cert-response-control ignore
+      
+    
+    ## Virtual server functions
+    - name: Create the virtual server
+      bigip_command:
+        commands:
+          - tmsh create ltm virtual proxy-passthrough-decrypt-vip destination 0.0.0.0:3128 mask any profiles replace-all-with { tcp {} http {} proxy-passthrough-decrypt-cssl { context clientside } proxy-passthrough-decrypt-sssl { context serverside } } source-address-translation { type automap } translate-address disabled translate-port disabled
