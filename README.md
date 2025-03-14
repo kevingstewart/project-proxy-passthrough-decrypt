@@ -71,4 +71,14 @@ The installer will create a basic (working) environment using a stub forging CA 
     - Configuration: Port Translation: disabled
     - Resources (tab): iRules: imported iRule
 
+---
+### Testing:
+To test, ensure the client routes through the BIG-IP to reach the upstream explicit proxy, then configure the client browser to point to the proxy. A command line curl test would look like this:
+```
+curl -vkx 198.19.96.30:3128 https://www.example.com
+```
+where the IP address above is the upstream proxy address.
+
+
+
 
