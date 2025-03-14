@@ -15,7 +15,7 @@ Requires:
 
 1. Run the following from the BIG-IP shell to get the installer:
     ```bash
-    curl sk foo -o proxy-passthrough-decrypt-installer.sh
+    curl -sk https://raw.githubusercontent.com/kevingstewart/project-proxy-passthrough-decrypt/refs/heads/main/proxy-passthrough-decrypt-installer.sh -o proxy-passthrough-decrypt-installer.sh
     chmod +x proxy-passthrough-decrypt-installer.sh
     ```
 
