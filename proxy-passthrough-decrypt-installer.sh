@@ -1,6 +1,6 @@
 #!/bin/bash
 
-baseurl=""
+baseurl="https://raw.githubusercontent.com/kevingstewart/project-proxy-passthrough-decrypt"
 
 if [[ -z "${BIGUSER}" ]]
 then
