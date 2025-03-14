@@ -1,0 +1,163 @@
+## Project: Explicit Proxy Pass-Through with Decryption
+## Version: 1.0
+## Date: 2025 Mar
+## Author: Kevin Stewart, F5 Networks
+
+proc csf_ptcl {ptcl taste len} {
+  if {[regexp {^([A-Z]+) (?:/|https?://|[A-Za-z\d-]{1,63}[.]|\[[a-fA-F\d:]+\]|(?:[*]\x20))} $taste junk method]} {
+    if { $method eq "CONNECT" } {
+      return "http-connect"
+    }
+    if {([lsearch -exact -sorted {DELETE GET HEAD LOCK OPTIONS PATCH POST PROPFIND PUT TRACE UNLOCK} $method] >= 0)} {
+      return "http"
+    }
+  }
+  if {$ptcl eq "http" || $ptcl eq "https" || $ptcl eq "http-connect"} {
+    if { $len < 8 } {
+      set ptcl "incomplete"
+    } else {
+      set ptcl "unknown"
+    }
+    return $ptcl
+  }
+  return $ptcl
+} ; #proc csf_ptcl
+
+
+when CLIENT_ACCEPTED {
+  # initial disable on client/server ssl and http
+  SSL::disable clientside
+  SSL::disable serverside
+  HTTP::disable
+
+  sharedvar ctx
+  set ctx(ptcl) "http"
+  TCP::collect 1 ; # dispatch probe
+} ; #CLIENT_ACCEPTED
+
+
+when HTTP_REQUEST {
+  if {[HTTP::method] eq "CONNECT"} {
+    set connhost "" ; set connport ""
+    if {[regexp {^([A-Za-z\d\.-]+):(\d+)} [HTTP::uri] junk connhost connport] || [regexp {^\[([a-fA-F\d:]+)\]:(\d+)} [HTTP::uri] junk connhost connport]} {
+      set connhost [string tolower $connhost]
+    } else { unset connhost; unset connport }
+  } else {
+    event HTTP_RESPONSE_RELEASE disable
+  }
+} ; #HTTP_REQUEST
+
+
+when HTTP_RESPONSE_RELEASE {
+  if { [HTTP::status] == 200 } {
+    set ctx(httpconn) 1
+    SSL::disable clientside
+    SSL::disable serverside
+    if { [info exists ctx(csf)] } { unset ctx(csf) }
+    TCP::collect
+  }
+} ; #HTTP_RESPONSE_RELEASE
+
+
+when CLIENT_DATA {
+  set len [TCP::payload length]
+  if {!$len} {
+    TCP::collect
+    return
+  } else {
+    set ctx(csf) true
+    set said [TCP::payload]
+    # release accepted event, if held, to proxy for creating connection to server
+    TCP::release 0
+  }
+
+  # partial Client Hello
+  if {($len < 44) && ( ([binary scan $said c type] == 1) && (($type & 0xff) == 22) )} {
+    set ipIdleTmo [IP::idle_timeout]
+    IP::idle_timeout 7
+  }
+
+  # enable client ssl and release
+  SSL::enable clientside
+  after 0 { TCP::release }
+} ; #CLIENT_DATA
+
+
+when CLIENTSSL_PASSTHROUGH {
+  if {[info exists ipIdleTmo]} { IP::idle_timeout $ipIdleTmo }
+  if {($ctx(ptcl) eq "http" || $ctx(ptcl) eq "https") && ${len} < 8} { reject ; return }
+
+  # not TLS
+  set ctx(ptcl) [call csf_ptcl $ctx(ptcl) $said $len]
+
+  # explicit proxy connection
+  if { $ctx(ptcl) eq "http-connect" } {
+    if { [info exists ctx(httpconn)] } {
+      reject
+      return
+    }
+    if {[PROFILE::exists http]} {
+      HTTP::enable
+    }
+    return
+  }
+}
+
+
+when CLIENTSSL_CLIENTHELLO {
+  # reset connection idle timer
+  if {[info exists ipIdleTmo]} { IP::idle_timeout $ipIdleTmo }
+  SSL::enable serverside
+} ; #CLIENTSSL_CLIENTHELLO
+
+
+when CLIENTSSL_HANDSHAKE {
+  SSL::unclean_shutdown enable
+  set clientssl_handshake 1
+  if { [info exists serverssl_data_collected] } { peer { SSL::release } }
+  SSL::collect
+} ; #CLIENTSSL_HANDSHAKE
+
+
+when CLIENTSSL_DATA {
+  #Get inner protocol
+  set inner_ptcl [call csf_ptcl $ctx(ptcl) [SSL::payload] [SSL::payload length]]
+
+  #HTTP CONNECT inside SSL?
+  if { $inner_ptcl eq "http-connect" } { reject ; return }
+
+  # Not enabling HTTP on CONNECT tunnel data
+  if { [info exists ctx(httpconn)] } { HTTP::disable }
+  
+  set ctx(csf_ssl) true
+
+  # If csf_ptcl returns incomplete, then there is insufficient data collected
+  # to determine HTTP method (this could be for example due to split HTTP
+  # requests to prevent BEAST attack). Set a timer to collect more bytes.
+  # If timer expires, then release whatever data we got to process further.
+  if { $inner_ptcl eq "incomplete" } {
+    if { ![info exists rccollecttmr] } {
+      set rccollecttmr [after 1000 {
+        set ctx(ptcl) "unknown"
+        unset rccollecttmr
+        event CLIENTSSL_DATA disable ; # prevent more CLIENTSSL_DATA event
+        SSL::release
+      }]
+    }
+    return
+  }
+  if {[info exists rccollecttmr]} { after cancel $rccollecttmr ; unset rccollecttmr }
+
+  # Update ctx(ptcl) to the inner protocol unless this is http.
+  # For http, update to https
+  if { $inner_ptcl ne "http" } {
+    set ctx(ptcl) $inner_ptcl
+  } else {
+    set ctx(ptcl) "https"
+  }
+
+  # prevent more CLIENTSSL_DATA event
+  event CLIENTSSL_DATA disable
+
+  SSL::release
+} ; #CLIENTSSL_DATA
