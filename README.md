@@ -28,10 +28,18 @@ Requires:
    ```bash
    ./proxy-passthrough-decrypt-installer.sh
    ```
+---
+
+The installer will create a basic (working) environment using a stub forging CA certificate and key, and listening on 0.0.0.0:3128, on all VLANs. Modify the above to suit your environment:
+* Import your own forging CA certificate and key and replace the stubs
+* Update the listening port on the virtual server
+* Update the client-facing listening VLAN
+* Modify source address translation (SNAT) as required between the BIG-IP and upstream explicit proxy
+* If the upstream explicit proxy is not local, ensure the BIG-IP has a proper gateway route to reach it
 
 ---
 ### To implement manually:
-1. Create the iRule
+1. Import the iRule
 2. Import your forging CA certificate and key
 3. Create the SSLFWD client SSL profile (Local Traffic -> Profiles -> SSL -> Client)
     - Configuration: Non-SSL Connections: enabled
